@@ -1,0 +1,3177 @@
+
+AVRASM ver. 2.1.57  C:\Users\icepaka89\Documents\Atmel Studio Code\DivergenceClock\DivergenceClock\DivergenceClock.asm Wed Dec 20 13:42:43 2017
+
+C:\Users\icepaka89\Documents\Atmel Studio Code\DivergenceClock\DivergenceClock\DivergenceClock.asm(51): Including file 'C:\Program Files (x86)\Atmel\Atmel Toolchain\AVR Assembler\Native\2.1.1175\avrassembler\Include\m16def.inc'
+                 
+                 
+                 ;*
+                 ;* Title: DivergenceClock.asm
+                 ;* Author: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: 1/1/2016
+                 ;* Target: ATmega16
+                 ;*
+                 ;* DESCRIPTION
+                 ;* 
+                 ;* This Program drives the nixie tube clock to be built for Carmen. It should 
+                 ;* have a total of 6 numeric displays that display, from left to right, the hours, 
+                 ;* minutes, and seconds of the current time. The system will have 3 buttons, which
+                 ;* are SET/ALM, INC, and DEC. For the alarm sound output, the circuit utilizes a
+                 ;* piezoelectric buzzer.
+                 ;*
+                 ;* Ports:
+                 ;* 
+                 ;* PORTA: OUTPUT
+                 ;* This port controls all of the IN-14 Nixie Tube displays
+                 ;*
+                 ;* PortB: INPUT / OUTPUT
+                 ;* This port reads in the input values from the three user input pushbuttons. Additionally PB3 is used as
+                 ;* the input for the external pulse generator coming from the ATTINY85. Setting PB4 to logic 1 initiates the
+                 ;* clock pulse start. PORTB also controls the ALARM_SET LED indicator on PB7. Note that as a multidirectional port, 
+                 ;* the sbi and cbi instructions must be used when using the ALM_SET LED. Writing directly to PORTB will disable 
+                 ;* the pullup resistors.
+                 ;*
+                 ;* PortC: N/A
+                 ;* This port is not used.
+                 ;*
+                 ;* PortD: OUTPUT
+                 ;* This port is used to sound the buzzer on PD7. It also controls the multiplexing of the
+                 ;* IN-14 Nixie Tube displays via the use of pnp transistors on PD0-PD6.
+                 ;*
+                 ;* VERSION HISTORY
+                 ;* 0.1 Tested the functionality of all circuit devices. All devices found to be working properly.
+                 ;* 0.2 Polished up delay subroutines and created the main program structure.
+                 ;* 0.3 Added in 7seg conversion subroutine. However need two digits for each value. Need to rework this approach to use BCD.
+                 ;* 0.4 Added a subroutine to utilize a BCD digit architecture. Register definitions were also edited to make this possible.
+                 ;* 0.5 Implemented a simple counter subroutine to test that all display values were correct. Device passed.
+                 ;* 0.6 PNP Transistor multiplexing hardware added. The display subroutine was implemented to use this hardware. Device passed all tests
+                 ;* 0.7 Multiple bugs fixed in the BCD subroutine related  to incorrect LSD counting past ten. Bug fix for "check_seconds".
+                 ;* 0.8 Similar bug related "check_seconds" bug on 0.7 fixed for "check_hours". Must check for max value before null return!
+                 ;* 0.9 Init boot subroutine implemented to set values for hours and seconds. Unit Passed all tests, and appears fully functional.
+                 ;* 1.0 Finished product. Alarm function implemented. Time setting indicators added to show which value is being edited by user.
+                 ;*
+                 ;* NX-1 Nixie Tube Clock (c) 2016 icepaka89
+                 ;***************************************************************************
+                  .list 
+                 
+                  ; ** REGISTER DEFINITIONS ** ;
+                  .def hours = r21
+                  .def minutes = r20
+                  .def seconds = r19
+                 
+                  .def hours_out = r23
+                  .def minutes_out = r24
+                  .def seconds_out = r25
+                 
+                  
+                  .def hours_out_L = r5
+                  .def hours_out_H = r4
+                  
+                  .def minutes_out_L = r3
+                  .def minutes_out_H = r2
+                 
+                  .def seconds_out_L = r1
+                  .def seconds_out_H = r0
+                 
+                  .def alm_hours = r7
+                  .def alm_minutes = r8
+                  
+                  .def tmp = r16
+                  .def tmp2 = r22
+                 
+                  .def tmrAlt = r6
+                  .def ALM_SET = r13
+                 
+                  ; ** PORT A INITIALIZATION ** ;
+000000 ef0f       ldi r16, $FF
+000001 bb0a       out DDRA, r16
+                 
+                  ; ** PORT B INITIALIZATION ** ;
+000002 e900       ldi r16, $90
+000003 bb07       out DDRB, r16
+000004 e007       ldi r16, $07
+000005 bb08       out PORTB, r16
+                 
+                  ; ** PORT D INITIALIZATION ** ;
+000006 ef0f       ldi r16, $FF
+000007 bb01       out DDRD, r16
+                 
+000008 ef1f       ldi r17, $FF
+                 
+                  ; ** STACK POINTER INITIALIZATION ** ;
+000009 e004       ldi r16, high(RAMEND)
+00000a bf0e       out SPH, r16
+                 
+00000b e50f       ldi r16, low(RAMEND)
+00000c bf0d       out SPL, r16
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* Boot Initialization -- Tests display devices and sets init values
+                 ;*
+                 ;* Description:
+                 ;* At boot, the system powers all numeric display modules and transistors. The
+                 ;* buzzer is also briefly sounded to ensure its operation. The device will then
+                 ;* greet the user and prompt them to set the desired time.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.1
+                 ;* Last updated: 12/29/2015
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;* Parameters: 
+                 ;*
+                 ;* Returns:
+                 ;***************************************************************************
+                 boot_chirp: 
+00000d e800      	ldi r16, $80
+00000e bb02      	out PORTD, r16
+00000f d204      	rcall short_chirp
+000010 2700      	clr r16
+000011 bb02      	out PORTD, r16
+000012 951a      	dec r17
+000013 f7c9      	brne boot_chirp
+                  
+                  post_display:
+000014 e70f      	ldi r16, $7F
+000015 bb02      	out PORTD, r16
+000016 e000      	ldi r16, $00
+000017 bb0b      	out PORTA, r16
+000018 9ac7      	sbi PORTB, 7
+000019 d1e9      	rcall delay_sec
+00001a 2700      	clr r16
+00001b bb02      	out PORTD, r16
+00001c bb0b      	out PORTA, r16
+00001d 98c7      	cbi PORTB, 7
+00001e d1e4      	rcall delay_sec
+                  
+                  init:
+00001f 9ac4      	sbi PORTB, 4
+000020 2755      	clr hours
+000021 e040      	ldi minutes, $00
+000022 e030      	ldi seconds, $00
+000023 e008      	ldi tmp, $08
+000024 2e60      	mov tmrAlt, tmp
+                 
+                 	;          bafg.cde
+000025 eb05      	ldi tmp, 0b10110101
+000026 2e40      	mov hours_out_H, tmp
+                 
+                 	;          bafg.cde
+000027 e703      	ldi tmp, 0b01110011
+000028 2e50      	mov hours_out_L, tmp
+                 
+                 	;          bafg.cde
+000029 e203      	ldi tmp, 0b00100011
+00002a 2e20      	mov minutes_out_H, tmp
+                 
+                 	;          bafg.cde
+00002b e203      	ldi tmp, 0b00100011
+00002c 2e30      	mov minutes_out_L, tmp
+                 
+                 	;          bafg.cde
+00002d ee07      	ldi tmp, 0b11100111
+00002e 2e00      	mov seconds_out_H, tmp
+                 
+                 	;          bafg.cde
+00002f e000      	ldi tmp, 0b00000000
+000030 2e10      	mov seconds_out_L, tmp
+                  display_greeting1:
+000031 d1ac      	rcall display_text
+000032 b366      	in tmp2, PINB
+000033 7068      	andi tmp2, $08
+000034 1566      	cp tmp2, tmrAlt
+000035 f3d9      	breq display_greeting1
+000036 1566      	cp tmp2, tmrAlt
+000037 f401      	brne done_greeting1
+                  done_greeting1:
+000038 2e66       	mov tmrAlt, tmp2
+                 
+                  prompt_hours:
+                 	;          bafg.cde
+000039 e000      	ldi tmp, 0b00000000
+00003a bb0b      	out PORTA, tmp
+00003b e003      	ldi tmp, 0b00000011
+00003c bb02      	out PORTD, tmp
+00003d d1c5      	rcall delay_sec
+                  setHours:
+00003e 9bb0      	sbis PINB, 0
+00003f c006      	rjmp incHours
+000040 9bb1      	sbis PINB, 1
+000041 c012      	rjmp waitSetMins
+000042 9bb2      	sbis PINB, 2
+000043 c006      	rjmp decHours
+000044 d10e      	rcall display
+000045 cff8      	rjmp setHours
+                  incHours:
+000046 305c      	cpi hours, $0C
+000047 f3b1      	breq setHours
+000048 9553      	inc hours
+000049 c004      	rjmp waitIncHr
+                  decHours:
+00004a 3050      	cpi hours, $00
+00004b f391      	breq setHours
+00004c 955a      	dec hours
+00004d c003      	rjmp waitDecHr
+                  waitIncHr:
+00004e 99b0      	sbic PINB, 0
+00004f cfee      	rjmp setHours
+000050 cffd      	rjmp waitIncHr
+                  waitDecHr:
+000051 99b2      	sbic PINB, 2
+000052 cfeb      	rjmp setHours
+000053 cffd      	rjmp waitDecHr
+                  waitSetMins:
+000054 99b1      	sbic PINB, 1
+000055 c001      	rjmp promptSetMins
+000056 cffd      	rjmp waitSetMins
+                  promptSetMins:
+                 	;          bafg.cde
+000057 e000      	ldi tmp, 0b00000000
+000058 bb0b      	out PORTA, tmp
+000059 e00c      	ldi tmp, 0b00001100
+00005a bb02      	out PORTD, tmp
+00005b d1a7      	rcall delay_sec
+                  setMins:
+00005c 9bb0      	sbis PINB, 0
+00005d c006      	rjmp incMins
+00005e 9bb1      	sbis PINB, 1
+00005f c012      	rjmp done
+000060 9bb2      	sbis PINB, 2
+000061 c006      	rjmp decMins
+000062 d0f0      	rcall display
+000063 cff8      	rjmp setMins
+                  incMins:
+000064 334c      	cpi minutes, $3C
+000065 f3b1      	breq setMins
+000066 9543      	inc minutes
+000067 c004      	rjmp waitIncMins
+                  decMins:
+000068 3040      	cpi minutes, $00
+000069 f391      	breq setMins
+00006a 954a      	dec minutes
+00006b c003      	rjmp waitDecMins
+                  waitIncMins:
+00006c 99b0      	sbic PINB, 0
+00006d cfee      	rjmp setMins
+00006e cffd      	rjmp waitIncMins
+                  waitDecMins:
+00006f 99b2      	sbic PINB, 2
+000070 cfeb      	rjmp setMins
+000071 cffd      	rjmp waitDecMins
+                  done:
+                 
+                 ; ** CLEAR ALL NEEDED REGISTERS ** ;
+000072 2700      clr tmp
+000073 2766      clr tmp2
+000074 2466      clr tmrAlt
+                 
+000075 2733      clr seconds
+                 
+000076 2444      clr hours_out_H
+000077 2455      clr hours_out_L
+000078 2422      clr minutes_out_H
+000079 2433      clr minutes_out_L
+00007a 2400      clr seconds_out_H
+00007b 2411      clr seconds_out_L
+                 
+00007c 2777      clr hours_out
+00007d 2788      clr minutes_out
+00007e 2799      clr seconds_out
+                 
+00007f 2477      clr alm_hours
+000080 2488      clr alm_minutes
+                 
+000081 d181      rcall delay_sec
+000082 d0c2      rcall chirp
+000083 9533      inc seconds
+                 
+                 ; main loop
+                  main: 
+000084 d0b3      	rcall check_seconds		;~2					;Update seconds value first.
+000085 d0a0      	rcall check_hours		;~2
+000086 d0a8      	rcall check_minutes		;~2
+000087 d0cb      	rcall display
+000088 d02d      	rcall checkInput
+000089 d001      	rcall poll_alm_status
+00008a cff9      	rjmp main
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* poll_alm_status -- check if the alarm should go off
+                 ;*
+                 ;* Description:
+                 ;* This subroutine checks to see if the alarm time is equal to the current time. If so, 
+                 ;* it will sound the alarm until the "set" button is pressed by the user. 
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: 1/1/2016
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;* Notes:
+                 ;* Possibly add a snooze button to this?
+                 ;***************************************************************************
+                  poll_alm_status:
+00008b e001      	ldi tmp, $01
+00008c 16d0      	cp ALM_SET, tmp
+00008d f009      	breq poll_alm_hrs
+00008e 9508      	ret
+                  poll_alm_hrs:
+00008f 1675      	cp alm_hours, hours
+000090 f009      	breq poll_alm_mins
+000091 9508      	ret
+                  poll_alm_mins:
+000092 1684      	cp alm_minutes, minutes
+000093 f009      	breq alarm
+000094 9508      	ret
+                  alarm:
+000095 2766      	clr tmp2
+                  alarm_loop:
+000096 3060      	cpi tmp2, $00
+000097 f099      	breq up_freq
+000098 3061      	cpi tmp2, $01
+000099 f099      	breq down_freq
+00009a 3062      	cpi tmp2, $02
+00009b f099      	breq mid_freq
+00009c 3063      	cpi tmp2, $03
+00009d f099      	breq low_freq
+                  buzz:
+00009e d099      	rcall check_seconds
+00009f d08f      	rcall check_minutes
+0000a0 9bb1      	sbis PINB, 1					;need to make sure alarm can always be turned off.
+0000a1 c012      	rjmp alm_return
+0000a2 9bb3      	sbis PINB, 3
+0000a3 cffa      	rjmp buzz
+0000a4 d0a8      	rcall alm_buzz
+0000a5 24dd      	clr ALM_SET
+0000a6 98c7      	cbi PORTB, 7
+0000a7 9563      	inc tmp2
+0000a8 9bb1      	sbis PINB, 1
+0000a9 c00a      	rjmp alm_return
+0000aa cfeb      	rjmp alarm_loop
+                  up_freq:
+0000ab e012      	ldi r17, $02
+0000ac cff1      	rjmp buzz
+                  down_freq:
+0000ad e010      	ldi r17, $00
+0000ae cfef      	rjmp buzz
+                  mid_freq:
+0000af e011      	ldi r17, $01
+0000b0 cfed      	rjmp buzz
+                  low_freq:
+0000b1 e017      	ldi r17, $07
+0000b2 2766      	clr tmp2
+0000b3 cfea      	rjmp buzz
+                  alm_return:
+0000b4 d14e      	rcall delay_sec
+0000b5 9508      	ret
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* checkInput -- Check if any pushbuttons are pressed
+                 ;*
+                 ;* Description:
+                 ;* This subroutine checks to see if any pushbuttons are pressed during the main
+                 ;* loop. The buttons have different functions when operating in the main loop.
+                 ;* inc = ALM_SET
+                 ;* set = RESET
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: 1/1/2016
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;* Notes:
+                 ;* The "dec" button does not have a function in the main loop and is not checked
+                 ;* by this subroutine.
+                 ;***************************************************************************
+                 checkInput:
+0000b6 9bb0      	sbis PINB, 0
+0000b7 c00d      	rjmp wait_alm_set
+0000b8 9bb1      	sbis PINB, 1
+0000b9 c00e      	rjmp set_new_time
+0000ba 9508      	ret
+                  set_alm:
+0000bb e001      	ldi tmp, $01
+0000bc 16d0      	cp ALM_SET, tmp
+0000bd f021      	breq alm_off
+                  alm_on:
+0000be 9ac7      	sbi PORTB, 7			;Turn on ALM_SET indicator
+0000bf 2ed0      	mov ALM_SET, tmp
+0000c0 d00a      	rcall init_alm_set
+0000c1 9508      	ret
+                  alm_off:
+0000c2 24dd      	clr ALM_SET
+0000c3 98c7      	cbi PORTB, 7			;turn off ALM_SET indicator
+0000c4 9508      	ret
+                  wait_alm_set:
+0000c5 99b0      	sbic PINB, 0
+0000c6 cff4      	rjmp set_alm 
+0000c7 cffd      	rjmp wait_alm_set	
+                  set_new_time:
+0000c8 d07c      	rcall chirp
+0000c9 d139      	rcall delay_sec
+0000ca cf6e      	rjmp prompt_hours
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* init_alm_set -- Set Alarm Time
+                 ;*
+                 ;* Description:
+                 ;* This subroutine allows the user to set a time for the alarm to go off.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: 1/1/2016
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;* Notes:
+                 ;***************************************************************************
+                 init_alm_set:
+0000cb 935f      	push hours
+0000cc 934f      	push minutes
+                 
+0000cd 2755      	clr hours
+0000ce 2744      	clr minutes
+                 
+                 	;          bafg.cde
+0000cf e000      	ldi tmp, 0b00000000
+0000d0 bb0b      	out PORTA, tmp
+0000d1 e003      	ldi tmp, 0b00000011
+0000d2 bb02      	out PORTD, tmp
+0000d3 d12f      	rcall delay_sec
+0000d4 9533      	inc seconds
+                 
+                  alm_setHours:
+0000d5 d062      	rcall check_seconds
+0000d6 9bb0      	sbis PINB, 0
+0000d7 c006      	rjmp alm_incHours
+0000d8 9bb1      	sbis PINB, 1
+0000d9 c012      	rjmp alm_waitSetMins
+0000da 9bb2      	sbis PINB, 2
+0000db c006      	rjmp alm_decHours
+0000dc d076      	rcall display
+0000dd cff7      	rjmp alm_setHours
+                  alm_incHours:
+0000de 305c      	cpi hours, $0C
+0000df f3a9      	breq alm_setHours
+0000e0 9553      	inc hours
+0000e1 c004      	rjmp alm_waitIncHr
+                  alm_decHours:
+0000e2 3050      	cpi hours, $00
+0000e3 f389      	breq alm_setHours
+0000e4 955a      	dec hours
+0000e5 c003      	rjmp alm_waitDecHr
+                  alm_waitIncHr:
+0000e6 99b0      	sbic PINB, 0
+0000e7 cfed      	rjmp alm_setHours
+0000e8 cffd      	rjmp alm_waitIncHr
+                  alm_waitDecHr:
+0000e9 99b2      	sbic PINB, 2
+0000ea cfea      	rjmp alm_setHours
+0000eb cffd      	rjmp alm_waitDecHr
+                  alm_waitSetMins:
+0000ec 99b1      	sbic PINB, 1
+0000ed c001      	rjmp prompt_alm_setMins
+0000ee cffd      	rjmp alm_waitSetMins
+                 
+                  prompt_alm_setMins:
+                 	;          bafg.cde
+0000ef e000      	ldi tmp, 0b00000000
+0000f0 bb0b      	out PORTA, tmp
+0000f1 e00c      	ldi tmp, 0b00001100
+0000f2 bb02      	out PORTD, tmp
+0000f3 d10f      	rcall delay_sec
+0000f4 9533      	inc seconds
+                 
+                  alm_setMins:
+0000f5 d042      	rcall check_seconds
+0000f6 9bb0      	sbis PINB, 0
+0000f7 c006      	rjmp alm_incMins
+0000f8 9bb1      	sbis PINB, 1
+0000f9 c012      	rjmp alm_set_done
+0000fa 9bb2      	sbis PINB, 2
+0000fb c006      	rjmp alm_decMins
+0000fc d056      	rcall display
+0000fd cff7      	rjmp alm_setMins
+                  alm_incMins:
+0000fe 334c      	cpi minutes, $3C
+0000ff f3a9      	breq alm_setMins
+000100 9543      	inc minutes
+000101 c004      	rjmp alm_waitIncMins
+                  alm_decMins:
+000102 3040      	cpi minutes, $00
+000103 f389      	breq alm_setMins
+000104 954a      	dec minutes
+000105 c003      	rjmp alm_waitDecMins
+                  alm_waitIncMins:
+000106 99b0      	sbic PINB, 0
+000107 cfed      	rjmp alm_setMins
+000108 cffd      	rjmp alm_waitIncMins
+                  alm_waitDecMins:
+000109 99b2      	sbic PINB, 2
+00010a cfea      	rjmp alm_setMins
+00010b cffd      	rjmp alm_waitDecMins
+                  alm_set_done:
+00010c 2e75      	mov alm_hours, hours
+00010d 2e84      	mov alm_minutes, minutes
+                 
+00010e 914f      	pop minutes
+00010f 915f      	pop hours
+                 
+000110 d0f2      	rcall delay_sec
+000111 d033      	rcall chirp
+000112 9508      	ret
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* testBtn -- Hardware test subroutine
+                 ;*
+                 ;* Description:
+                 ;* This subroutine sounds the buzzer if any button is pressed by the user.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;* Notes:
+                 ;* NOTE THAT THIS SUBROUTINE USER "tmp2" which is defined as r22. THIS SUBROUTINE
+                 ;* WILL REWRITE "alm" SINCE IT IS ALSO DEFINED AS r22 !!!
+                 ;***************************************************************************
+                  testBtn:
+000113 b306      	in tmp, PINB
+000114 7007      	andi tmp, $07
+000115 3007      	cpi tmp, $07
+000116 f008      	brlo goChirp
+000117 9508      	ret
+                  goChirp:
+000118 d02c      	rcall chirp
+000119 9508      	ret
+                  
+                 ;***************************************************************************
+                 ;*
+                 ;* testCounter -- Hardware test subroutine
+                 ;*
+                 ;* Description:
+                 ;* This subroutine counts to 9 and outputs each number to the displays for 1 second.
+                 ;* Once it reaches 9, it loops around and begins at zero again.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;***************************************************************************
+                  testCounter:
+00011a 3069      	cpi tmp2, $09
+00011b f029      	breq clrRet
+00011c 9563      	inc tmp2
+00011d d065      	rcall hex_2_7seg
+00011e bb3b      	out PORTA, seconds
+00011f d0e3      	rcall delay_sec
+000120 9508      	ret
+                  clrRet:
+000121 2766      	clr tmp2
+000122 d060      	rcall hex_2_7seg
+000123 bb3b      	out PORTA, seconds
+000124 d0de      	rcall delay_sec
+000125 9508      	ret
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* check_hours -- Handles the hours value
+                 ;*
+                 ;* Description:
+                 ;* This subroutine updates the hours value appropriately
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: Usually 2
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;***************************************************************************
+                  check_hours:
+000126 334c      	cpi minutes, $3C				;1 cycle	;Check if minutes = 60
+000127 f009      	breq inc_hours					;1 cycle	;If so, increment hours
+000128 9508      	ret
+                  inc_hours:
+000129 305c      	cpi hours, $0C								;if hours = 12, reset hours
+00012a f011      	breq clr_hours					
+00012b 9553      	inc hours									;increment hours
+00012c 9508      	ret
+                  clr_hours:
+00012d e051      	ldi hours, $01								;reset hours value back to 1
+00012e 9508      	ret											;return					
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* check_minutes -- Handles the minutes value
+                 ;*
+                 ;* Description:
+                 ;* This subroutine updates the minutes value appropriately
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: Usually 2
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;***************************************************************************
+                  check_minutes:	
+00012f 333c      	cpi seconds, $3C							;check if seconds = 60
+000130 f019      	breq inc_minutes							;if so,inc minutes
+000131 334c      	cpi minutes, $3C							;check if minutes = 60
+000132 f019      	breq clr_minutes							;if so, clear minutes, not inc
+000133 9508      	ret
+                  inc_minutes:
+000134 9543      	inc minutes
+000135 9508      	ret
+                  clr_minutes:
+000136 2744      	clr minutes									;clear minutes value
+000137 9508      	ret											;return
+                  
+                 ;***************************************************************************
+                 ;*
+                 ;* check_seconds -- Handles the seconds value
+                 ;*
+                 ;* Description:
+                 ;* This subroutine updates the seconds value appropriately
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: Usually 2
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;***************************************************************************
+                  check_seconds:
+000138 333c      	cpi seconds, $3C
+000139 f049      	breq clr_seconds
+00013a b306      	in tmp, PINB
+00013b 7008      	andi tmp, $08
+00013c 1506      	cp tmp, tmrAlt
+00013d f031      	breq return_null
+00013e 1506      	cp tmp, tmrAlt
+00013f f401      	brne update
+                  update:
+000140 9533      	inc seconds
+000141 2e60      	mov tmrAlt, tmp
+000142 9508      	ret
+                  clr_seconds:
+000143 2733      	clr seconds
+                  return_null:
+000144 9508      	ret
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* chirp -- short buzzer chirp
+                 ;*
+                 ;* Description:
+                 ;* This subroutine plays a short chirp on the buzzer. Can be used to verify 
+                 ;* pushbutton presses.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: none
+                 ;*
+                 ;* Notes:
+                 ;* <Important info>
+                 ;*
+                 ;***************************************************************************
+                  chirp: 
+000145 e800      	ldi r16, $80
+000146 bb02      	out PORTD, r16
+000147 d0cc      	rcall short_chirp
+000148 2700      	clr r16
+000149 bb02      	out PORTD, r16
+00014a 951a      	dec r17
+00014b f7c9      	brne chirp
+00014c 9508      	ret
+                  
+                 ;***************************************************************************
+                 ;*
+                 ;* alm_buzz -- alarm noise
+                 ;*
+                 ;* Description:
+                 ;* This subroutine creates a load noise on the buzzer which is used for 
+                 ;* the alarm
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: 1/1/2016
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: r16 <tmp> ,r17
+                 ;*
+                 ;* Notes:
+                 ;* <Important info>
+                 ;*
+                 ;***************************************************************************
+                  alm_buzz:
+00014d e800      	ldi tmp, $80
+00014e bb02      	out PORTD, tmp
+00014f d143      	rcall alm_buzz_delay
+000150 2700      	clr tmp
+000151 bb02      	out PORTD, tmp
+000152 9508      	ret
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* display -- displays values of hours, minutes, and seconds 
+                 ;*
+                 ;* Description:
+                 ;* This subroutine displays the values of hours, minutes, and seconds to their respective displays.
+                 ;* It also handles the multiplexing of the 7seg display modules.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: tmp
+                 ;*
+                 ;* Parameters: 
+                 ;*
+                 ;* Returns:
+                 ;*
+                 ;* Notes:
+                 ;* <Important info>
+                 ;*
+                 ;***************************************************************************
+                  display:
+000153 d059      	rcall bin2BCDAll
+000154 d02e      	rcall hex_2_7seg		;51 cycles
+                 
+000155 e001      	ldi tmp, 0b00000001
+000156 bb02      	out PORTD, tmp
+000157 ba4b      	out PORTA, hours_out_H 
+000158 d140      	rcall chirp_delay
+000159 2700      	clr tmp
+00015a bb0b      	out PORTA, tmp
+                 
+00015b e002      	ldi tmp, 0b00000010
+00015c bb02      	out PORTD, tmp
+00015d ba5b      	out PORTA, hours_out_L
+00015e d13a      	rcall chirp_delay
+00015f 2700      	clr tmp
+000160 bb0b      	out PORTA, tmp
+                 
+000161 e004      	ldi tmp, 0b00000100
+000162 bb02      	out PORTD, tmp
+000163 ba2b      	out PORTA, minutes_out_H
+000164 d134      	rcall chirp_delay
+000165 2700      	clr tmp
+000166 bb0b      	out PORTA, tmp
+                 
+000167 e008      	ldi tmp, 0b00001000
+000168 bb02      	out PORTD, tmp
+000169 ba3b      	out PORTA, minutes_out_L
+00016a d12e      	rcall chirp_delay
+00016b 2700      	clr tmp
+00016c bb0b      	out PORTA, tmp
+                 
+00016d e100      	ldi tmp, 0b00010000
+00016e bb02      	out PORTD, tmp
+00016f ba0b      	out PORTA, seconds_out_H
+000170 d128      	rcall chirp_delay
+000171 2700      	clr tmp
+000172 bb0b      	out PORTA, tmp
+                 
+000173 e200      	ldi tmp, 0b00100000
+000174 bb02      	out PORTD, tmp
+000175 ba1b      	out PORTA, seconds_out_L
+000176 d122      	rcall chirp_delay
+000177 2700      	clr tmp
+000178 bb0b      	out PORTA, tmp
+                 
+                 ; ** RESET ALL OUTPUT TEMP VALUES ** ;
+000179 2444      	clr hours_out_H
+00017a 2455      	clr hours_out_L
+00017b 2422      	clr minutes_out_H
+00017c 2433      	clr minutes_out_L
+00017d 2400      	clr seconds_out_H
+00017e 2411      	clr seconds_out_L
+                 
+00017f 2777      	clr hours_out
+000180 2788      	clr minutes_out
+000181 2799      	clr seconds_out
+                 
+000182 9508      	ret
+                  
+                 ;***************************************************************************
+                 ;*
+                 ;* hex_2_7seg -- Converts hex values to their 7seg display equivalents
+                 ;*
+                 ;* Description:
+                 ;* This subroutine takes the hex values in hours, minutes, and seconds and converts them to their equivalent
+                 ;* display values on the 7seg display. The output values are stored in hours_out, minutes_out, and seconds_out.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: 12/20/2015
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 51
+                 ;* Low registers modified: hours_out, minutes_out, seconds_out
+                 ;* High registers modified: none
+                 ;*
+                 ;* Parameters: 
+                 ;* The values of time stored in the hours, minutes, and seconds registers
+                 ;* Returns:
+                 ;* 7seg display values in hours_out, minutes_out, and seconds_out
+                 ;*
+                 ;* Notes:
+                 ;* This subroutine does not edit the values of hours, minutes, or seconds. 
+                 ;* A value of $0A will return a zero value to the associated regs.
+                 ;*
+                 ;***************************************************************************
+                  hex_2_7seg:
+000183 931f      	push r17						;2
+000184 e010      	ldi r17, $00					;1
+                 		
+                 	; ** HOURS CONVERSION ** ;			/ ** 14 cycles ** /
+000185 e0f3      	ldi ZH, high(hextable * 2)		;1
+000186 e4ea      	ldi ZL, low(hextable * 2)		;1
+                 
+000187 0de4      	add ZL, hours_out_H				;1
+000188 1ff1      	adc ZH, r17						;1
+                 
+000189 9044      	lpm hours_out_H, Z				;3
+                 
+00018a e0f3      	ldi ZH, high(hextable * 2)		;1
+00018b e4ea      	ldi ZL, low(hextable * 2)		;1
+                 
+00018c 0de5      	add ZL, hours_out_L				;1
+00018d 1ff1      	adc ZH, r17						;1
+                 
+00018e 9054      	lpm hours_out_L, Z				;3
+                 
+                 	; ** MINUTES CONVERSION ** ;		/ ** 14 Cycles ** /
+00018f e0f3      	ldi ZH, high(hextable * 2)		;1
+000190 e4ea      	ldi ZL, low(hextable * 2)		;1
+                 
+000191 0de2      	add ZL, minutes_out_H			;1
+000192 1ff1      	adc ZH, r17						;1
+                 
+000193 9024      	lpm minutes_out_H, Z			;3
+                 
+000194 e0f3      	ldi ZH, high(hextable * 2)		;1
+000195 e4ea      	ldi ZL, low(hextable * 2)		;1
+                 
+000196 0de3      	add ZL, minutes_out_L			;1
+000197 1ff1      	adc ZH, r17						;1
+                 
+000198 9034      	lpm minutes_out_L, Z			;3
+                 
+                 	; ** SECONDS CONVERSION ** ;		/ ** 14 Cycles ** /
+000199 e0f3      	ldi ZH, high(hextable * 2)		;1
+00019a e4ea      	ldi ZL, low(hextable * 2)		;1
+                 
+00019b 0de0      	add ZL, seconds_out_H			;1	
+00019c 1ff1      	adc ZH, r17						;1
+                 
+00019d 9004      	lpm seconds_out_H, Z			;3
+                 
+00019e e0f3      	ldi ZH, high(hextable * 2)		;1
+00019f e4ea      	ldi ZL, low(hextable * 2)		;1
+                 
+0001a0 0de1      	add ZL, seconds_out_L			;1
+0001a1 1ff1      	adc ZH, r17						;1
+                 
+0001a2 9014      	lpm seconds_out_L, Z			;3
+                 
+0001a3 911f      	pop r17							;2
+0001a4 9508      	ret								;4
+                 
+                 ;Table of segment values to display digits 0 - F
+                 ;		       0    1    2    3    4    5    6    7    8  | 9    A    b    C    d    E    F
+0001a5 0100
+0001a6 0302
+0001a7 0504
+0001a8 0706
+0001a9 0908
+0001aa c000
+0001ab 9731
+0001ac 3830      hextable: .db $00, $01, $02, $03, $04, $05, $06, $07, $08, $09, $00, $C0, $31, $97, $30, $38
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* "bin2BCDAll" - All values BCD conversion
+                 ;*
+                 ;* This subroutine takes the values of hours, minutes, and seconds and converts
+                 ;* them to BCD numbers spanned across hours_out_H:hours_out_L, minutes_out_H:minutes_out_L,
+                 ;* and seconds_out_H:seconds_out_L. 
+                 ;*
+                 ;* Low registers used	:r5-r0
+                 ;* High registers used  :hours_out, minutes_out, seconds_out, tmp
+                 ;*
+                 ;* Notes: 
+                 ;* This subroutine does NOT convert these numbers to output values. There is
+                 ;* another subroutine that is used for this.
+                 ;*
+                 ;***************************************************************************
+                 bin2BCDAll:
+0001ad 2f75      	mov hours_out, hours			
+0001ae 2f84      	mov minutes_out, minutes		
+0001af 2f93      	mov seconds_out, seconds		
+                 hr2BCD:
+0001b0 507a      	subi hours_out, 10	
+0001b1 f010      	brcs min2BCD					
+0001b2 9443      	inc hours_out_H
+0001b3 cffc      	rjmp hr2BCD
+                 min2BCD:
+0001b4 508a      	subi minutes_out, 10
+0001b5 f010      	brcs sec2BCD
+0001b6 9423      	inc minutes_out_H
+0001b7 cffc      	rjmp min2BCD
+                 sec2BCD:
+0001b8 509a      	subi seconds_out, 10
+0001b9 f010      	brcs return
+0001ba 9403      	inc seconds_out_H
+0001bb cffc      	rjmp sec2BCD
+                  return:
+0001bc 2700      	clr tmp
+                 	; ** HOURS LOW BYTE ** ;
+0001bd 2f05      	mov tmp, hours
+0001be 300a      	cpi tmp, $0A				;if tmp >= 10, subtract ten
+0001bf f410      	brsh subHour
+0001c0 300a      	cpi tmp, $0A				;if tmp < 10, 
+0001c1 f018      	brlo loadHour
+                 subHour:
+0001c2 500a      	subi tmp, $0A
+0001c3 300a      	cpi tmp, $0A
+0001c4 f7e8      	brsh subHour
+                 loadHour:
+0001c5 700f      	andi tmp, $0F
+0001c6 2e50      	mov hours_out_L, tmp
+                 
+0001c7 2700      	clr tmp
+                 	; ** MINUTES LOW BYTE ** ;
+0001c8 2f04      	mov tmp, minutes
+0001c9 300a      	cpi tmp, $0A
+0001ca f410      	brsh subMin
+0001cb 300a      	cpi tmp, $0A
+0001cc f018      	brlo loadMin
+                 subMin:
+0001cd 500a      	subi tmp, $0A
+0001ce 300a      	cpi tmp, $0A
+0001cf f7e8      	brsh subMin
+                 loadMin:
+0001d0 700f      	andi tmp, $0F
+0001d1 2e30      	mov minutes_out_L, tmp
+                 
+0001d2 2700      	clr tmp
+                 	; ** SECONDS LOW BYTE ** ;
+0001d3 2f03      	mov tmp, seconds
+0001d4 300a      	cpi tmp, $0A
+0001d5 f410      	brsh subSec
+0001d6 300a      	cpi tmp, $0A
+0001d7 f018      	brlo loadSec
+                 subSec:
+0001d8 500a      	subi tmp, $0A
+0001d9 300a      	cpi tmp, $0A
+0001da f7e8      	brsh subSec
+                 loadSec:
+0001db 700f      	andi tmp, $0F
+0001dc 2e10      	mov seconds_out_L, tmp
+                 	
+0001dd 9508      	ret
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* display_text -- displays text based on values of hours, minutes, and seconds 
+                 ;*
+                 ;* Description:
+                 ;* This subroutine displays text on the 7seg displays based on the output temp 
+                 ;* values of hours_out_H:hours_out_L, minutes_out_H:minutes_out_L, and seconds_out_H:seconds_L. 
+                 ;* It is used to display messages at boot. Assumes the registers have already been given 
+                 ;* correct 7seg output values.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: 12/30/2015
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: r5-r0
+                 ;* High registers modified: tmp
+                 ;*
+                 ;* Parameters: 
+                 ;*
+                 ;* Returns:
+                 ;*
+                 ;* Notes:
+                 ;* THIS SUBROUTINE DOES NOT CALL "hex_2_7seg" OR "bin2BCDAll" !!!!
+                 ;*
+                 ;***************************************************************************
+                  display_text:
+0001de e70e      	ldi tmp, 0b01111110
+0001df bb02      	out PORTD, tmp
+0001e0 ba4b      	out PORTA, hours_out_H 
+0001e1 d0b7      	rcall chirp_delay
+0001e2 2700      	clr tmp
+0001e3 bb0b      	out PORTA, tmp
+                 
+0001e4 e70d      	ldi tmp, 0b01111101
+0001e5 bb02      	out PORTD, tmp
+0001e6 ba5b      	out PORTA, hours_out_L
+0001e7 d0b1      	rcall chirp_delay
+0001e8 2700      	clr tmp
+0001e9 bb0b      	out PORTA, tmp
+                 
+0001ea e70b      	ldi tmp, 0b01111011
+0001eb bb02      	out PORTD, tmp
+0001ec ba2b      	out PORTA, minutes_out_H
+0001ed d0ab      	rcall chirp_delay
+0001ee 2700      	clr tmp
+0001ef bb0b      	out PORTA, tmp
+                 
+0001f0 e707      	ldi tmp, 0b01110111
+0001f1 bb02      	out PORTD, tmp
+0001f2 ba3b      	out PORTA, minutes_out_L
+0001f3 d0a5      	rcall chirp_delay
+0001f4 2700      	clr tmp
+0001f5 bb0b      	out PORTA, tmp
+                 
+0001f6 e60f      	ldi tmp, 0b01101111
+0001f7 bb02      	out PORTD, tmp
+0001f8 ba0b      	out PORTA, seconds_out_H
+0001f9 d09f      	rcall chirp_delay
+0001fa 2700      	clr tmp
+0001fb bb0b      	out PORTA, tmp
+                 
+0001fc e50f      	ldi tmp, 0b01011111
+0001fd bb02      	out PORTD, tmp
+0001fe ba1b      	out PORTA, seconds_out_L
+0001ff d099      	rcall chirp_delay
+000200 2700      	clr tmp
+000201 bb0b      	out PORTA, tmp
+                 
+000202 9508      	ret
+                 
+                 ;***************************************************************************
+                 ;*
+                 ;* delay_sec -- Delays for one second
+                 ;*
+                 ;* Description:
+                 ;* This subroutine delays for approximately 1.02 seconds.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATmega16 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: r16, r17, r18
+                 ;*
+                 ;* Parameters: none
+                 ;*
+                 ;*
+                 ;* Notes: This subroutine van be made into a variable delay if r18 is not set
+                 ;* but instead used as a parameter.
+                 ;*
+                 ;***************************************************************************
+                  delay_sec:
+000203 2700      	clr r16
+000204 e614      	ldi r17, $64								;load r17 with a value of 100
+000205 e02a      	ldi r18, $0A								;load r18 with a value of 10
+000206 c004      	rjmp delay_loop								;begin at delay_loop
+                  ;delays for 1.02 s each iteration.
+                  outer_delay:
+000207 952a      	dec r18										;inner_delay is run 'r18' times
+000208 e614      	ldi r17, $64								;re-load r17 with value of 100 so that inner_delay can be re-run.
+000209 c001      	rjmp delay_loop								;restart at delay_loop
+                  ;delays for 0.102 s each iteration. We therefore need 10 iterations
+                  inner_delay:
+00020a 951a      	dec r17										;delay_loop is run 'r17' times
+                  ;delays for 0.00102 s  each iteration. We therefore need 1000 iterations 
+                  delay_loop:									
+00020b 9503      	inc r16										;1 cycle
+00020c 3f0f      	cpi r16, $FF								;1 cycle
+00020d f7e9      	brne delay_loop								;2 cycles
+                 
+                 	;inner delay check
+00020e 3010      	cpi r17, $00								;is r17 = 0?
+00020f f7d1      	brne inner_delay							;if not, run delay loop again
+                 
+000210 3020      	cpi r18, $00								;is r18 = 0?
+000211 f7a9      	brne outer_delay							;if not, run outer delay again
+000212 0000      	nop
+000213 9508      	ret											;if yes, return.
+                 
+                  short_chirp:
+000214 0000
+000215 0000
+000216 0000
+000217 0000
+000218 0000
+000219 0000
+00021a 0000
+00021b 0000
+00021c 0000
+00021d 0000
+00021e 0000
+00021f 0000
+000220 0000
+000221 0000
+000222 0000
+000223 0000
+000224 0000
+000225 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000226 0000
+000227 0000
+000228 0000
+000229 0000
+00022a 0000
+00022b 0000
+00022c 0000
+00022d 0000
+00022e 0000
+00022f 0000
+000230 0000
+000231 0000
+000232 0000
+000233 0000
+000234 0000
+000235 0000
+000236 0000
+000237 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000238 0000
+000239 0000
+00023a 0000
+00023b 0000
+00023c 0000
+00023d 0000
+00023e 0000
+00023f 0000
+000240 0000
+000241 0000
+000242 0000
+000243 0000
+000244 0000
+000245 0000
+000246 0000
+000247 0000
+000248 0000
+000249 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00024a 0000
+00024b 0000
+00024c 0000
+00024d 0000
+00024e 0000
+00024f 0000
+000250 0000
+000251 0000
+000252 0000
+000253 0000
+000254 0000
+000255 0000
+000256 0000
+000257 0000
+000258 0000
+000259 0000
+00025a 0000
+00025b 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00025c 0000
+00025d 0000
+00025e 0000
+00025f 0000
+000260 0000
+000261 0000
+000262 0000
+000263 0000
+000264 0000
+000265 0000
+000266 0000
+000267 0000
+000268 0000
+000269 0000
+00026a 0000
+00026b 0000
+00026c 0000
+00026d 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00026e 0000
+00026f 0000
+000270 0000
+000271 0000
+000272 0000
+000273 0000
+000274 0000
+000275 0000
+000276 0000
+000277 0000
+000278 0000
+000279 0000
+00027a 0000
+00027b 0000
+00027c 0000
+00027d 0000
+00027e 0000
+00027f 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000280 0000
+000281 0000
+000282 0000
+000283 0000
+000284 0000
+000285 0000
+000286 0000
+000287 0000
+000288 0000
+000289 0000
+00028a 0000
+00028b 0000
+00028c 0000
+00028d 0000
+00028e 0000
+00028f 0000
+000290 0000
+000291 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000292 9508      	ret
+                 
+                  alm_buzz_delay:
+000293 2700      	clr r16
+000294 951a      	dec r17										;delay_loop is run 'r17' times
+                  ;delays for 0.00102 s if r17 = $FF 
+                  alm_delay_loop:									
+000295 9503      	inc r16										;1 cycle
+000296 1701      	cp r16, r17							
+000297 f7e9      	brne alm_delay_loop
+000298 9508      	ret
+                  /*
+                 	 !! SMALL DELAY USED FOR BOOT CHIRP. DO NOT EDIT !!
+                  */
+                  chirp_delay: 
+000299 0000
+00029a 0000
+00029b 0000
+00029c 0000
+00029d 0000
+00029e 0000
+00029f 0000
+0002a0 0000
+0002a1 0000
+0002a2 0000
+0002a3 0000
+0002a4 0000
+0002a5 0000
+0002a6 0000
+0002a7 0000
+0002a8 0000
+0002a9 0000
+0002aa 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0002ab 0000
+0002ac 0000
+0002ad 0000
+0002ae 0000
+0002af 0000
+0002b0 0000
+0002b1 0000
+0002b2 0000
+0002b3 0000
+0002b4 0000
+0002b5 0000
+0002b6 0000
+0002b7 0000
+0002b8 0000
+0002b9 0000
+0002ba 0000
+0002bb 0000
+0002bc 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0002bd 0000
+0002be 0000
+0002bf 0000
+0002c0 0000
+0002c1 0000
+0002c2 0000
+0002c3 0000
+0002c4 0000
+0002c5 0000
+0002c6 0000
+0002c7 0000
+0002c8 0000
+0002c9 0000
+0002ca 0000
+0002cb 0000
+0002cc 0000
+0002cd 0000
+0002ce 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0002cf 0000
+0002d0 0000
+0002d1 0000
+0002d2 0000
+0002d3 0000
+0002d4 0000
+0002d5 0000
+0002d6 0000
+0002d7 0000
+0002d8 0000
+0002d9 0000
+0002da 0000
+0002db 0000
+0002dc 0000
+0002dd 0000
+0002de 0000
+0002df 0000
+0002e0 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0002e1 0000
+0002e2 0000
+0002e3 0000
+0002e4 0000
+0002e5 0000
+0002e6 0000
+0002e7 0000
+0002e8 0000
+0002e9 0000
+0002ea 0000
+0002eb 0000
+0002ec 0000
+0002ed 0000
+0002ee 0000
+0002ef 0000
+0002f0 0000
+0002f1 0000
+0002f2 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0002f3 0000
+0002f4 0000
+0002f5 0000
+0002f6 0000
+0002f7 0000
+0002f8 0000
+0002f9 0000
+0002fa 0000
+0002fb 0000
+0002fc 0000
+0002fd 0000
+0002fe 0000
+0002ff 0000
+000300 0000
+000301 0000
+000302 0000
+000303 0000
+000304 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000305 0000
+000306 0000
+000307 0000
+000308 0000
+000309 0000
+00030a 0000
+00030b 0000
+00030c 0000
+00030d 0000
+00030e 0000
+00030f 0000
+000310 0000
+000311 0000
+000312 0000
+000313 0000
+000314 0000
+000315 0000
+000316 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000317 0000
+000318 0000
+000319 0000
+00031a 0000
+00031b 0000
+00031c 0000
+00031d 0000
+00031e 0000
+00031f 0000
+000320 0000
+000321 0000
+000322 0000
+000323 0000
+000324 0000
+000325 0000
+000326 0000
+000327 0000
+000328 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000329 0000
+00032a 0000
+00032b 0000
+00032c 0000
+00032d 0000
+00032e 0000
+00032f 0000
+000330 0000
+000331 0000
+000332 0000
+000333 0000
+000334 0000
+000335 0000
+000336 0000
+000337 0000
+000338 0000
+000339 0000
+00033a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00033b 0000
+00033c 0000
+00033d 0000
+00033e 0000
+00033f 0000
+000340 0000
+000341 0000
+000342 0000
+000343 0000
+000344 0000
+000345 0000
+000346 0000
+000347 0000
+000348 0000
+000349 0000
+00034a 0000
+00034b 0000
+00034c 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00034d 0000
+00034e 0000
+00034f 0000
+000350 0000
+000351 0000
+000352 0000
+000353 0000
+000354 0000
+000355 0000
+000356 0000
+000357 0000
+000358 0000
+000359 0000
+00035a 0000
+00035b 0000
+00035c 0000
+00035d 0000
+00035e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00035f 0000
+000360 0000
+000361 0000
+000362 0000
+000363 0000
+000364 0000
+000365 0000
+000366 0000
+000367 0000
+000368 0000
+000369 0000
+00036a 0000
+00036b 0000
+00036c 0000
+00036d 0000
+00036e 0000
+00036f 0000
+000370 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000371 0000
+000372 0000
+000373 0000
+000374 0000
+000375 0000
+000376 0000
+000377 0000
+000378 0000
+000379 0000
+00037a 0000
+00037b 0000
+00037c 0000
+00037d 0000
+00037e 0000
+00037f 0000
+000380 0000
+000381 0000
+000382 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000383 0000
+000384 0000
+000385 0000
+000386 0000
+000387 0000
+000388 0000
+000389 0000
+00038a 0000
+00038b 0000
+00038c 0000
+00038d 0000
+00038e 0000
+00038f 0000
+000390 0000
+000391 0000
+000392 0000
+000393 0000
+000394 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000395 0000
+000396 0000
+000397 0000
+000398 0000
+000399 0000
+00039a 0000
+00039b 0000
+00039c 0000
+00039d 0000
+00039e 0000
+00039f 0000
+0003a0 0000
+0003a1 0000
+0003a2 0000
+0003a3 0000
+0003a4 0000
+0003a5 0000
+0003a6 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0003a7 0000
+0003a8 0000
+0003a9 0000
+0003aa 0000
+0003ab 0000
+0003ac 0000
+0003ad 0000
+0003ae 0000
+0003af 0000
+0003b0 0000
+0003b1 0000
+0003b2 0000
+0003b3 0000
+0003b4 0000
+0003b5 0000
+0003b6 0000
+0003b7 0000
+0003b8 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0003b9 0000
+0003ba 0000
+0003bb 0000
+0003bc 0000
+0003bd 0000
+0003be 0000
+0003bf 0000
+0003c0 0000
+0003c1 0000
+0003c2 0000
+0003c3 0000
+0003c4 0000
+0003c5 0000
+0003c6 0000
+0003c7 0000
+0003c8 0000
+0003c9 0000
+0003ca 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0003cb 0000
+0003cc 0000
+0003cd 0000
+0003ce 0000
+0003cf 0000
+0003d0 0000
+0003d1 0000
+0003d2 0000
+0003d3 0000
+0003d4 0000
+0003d5 0000
+0003d6 0000
+0003d7 0000
+0003d8 0000
+0003d9 0000
+0003da 0000
+0003db 0000
+0003dc 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0003dd 0000
+0003de 0000
+0003df 0000
+0003e0 0000
+0003e1 0000
+0003e2 0000
+0003e3 0000
+0003e4 0000
+0003e5 0000
+0003e6 0000
+0003e7 0000
+0003e8 0000
+0003e9 0000
+0003ea 0000
+0003eb 0000
+0003ec 0000
+0003ed 0000
+0003ee 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0003ef 0000
+0003f0 0000
+0003f1 0000
+0003f2 0000
+0003f3 0000
+0003f4 0000
+0003f5 0000
+0003f6 0000
+0003f7 0000
+0003f8 0000
+0003f9 0000
+0003fa 0000
+0003fb 0000
+0003fc 0000
+0003fd 0000
+0003fe 0000
+0003ff 0000
+000400 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000401 0000
+000402 0000
+000403 0000
+000404 0000
+000405 0000
+000406 0000
+000407 0000
+000408 0000
+000409 0000
+00040a 0000
+00040b 0000
+00040c 0000
+00040d 0000
+00040e 0000
+00040f 0000
+000410 0000
+000411 0000
+000412 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000413 0000
+000414 0000
+000415 0000
+000416 0000
+000417 0000
+000418 0000
+000419 0000
+00041a 0000
+00041b 0000
+00041c 0000
+00041d 0000
+00041e 0000
+00041f 0000
+000420 0000
+000421 0000
+000422 0000
+000423 0000
+000424 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000425 0000
+000426 0000
+000427 0000
+000428 0000
+000429 0000
+00042a 0000
+00042b 0000
+00042c 0000
+00042d 0000
+00042e 0000
+00042f 0000
+000430 0000
+000431 0000
+000432 0000
+000433 0000
+000434 0000
+000435 0000
+000436 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000437 0000
+000438 0000
+000439 0000
+00043a 0000
+00043b 0000
+00043c 0000
+00043d 0000
+00043e 0000
+00043f 0000
+000440 0000
+000441 0000
+000442 0000
+000443 0000
+000444 0000
+000445 0000
+000446 0000
+000447 0000
+000448 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000449 0000
+00044a 0000
+00044b 0000
+00044c 0000
+00044d 0000
+00044e 0000
+00044f 0000
+000450 0000
+000451 0000
+000452 0000
+000453 0000
+000454 0000
+000455 0000
+000456 0000
+000457 0000
+000458 0000
+000459 0000
+00045a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00045b 0000
+00045c 0000
+00045d 0000
+00045e 0000
+00045f 0000
+000460 0000
+000461 0000
+000462 0000
+000463 0000
+000464 0000
+000465 0000
+000466 0000
+000467 0000
+000468 0000
+000469 0000
+00046a 0000
+00046b 0000
+00046c 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00046d 0000
+00046e 0000
+00046f 0000
+000470 0000
+000471 0000
+000472 0000
+000473 0000
+000474 0000
+000475 0000
+000476 0000
+000477 0000
+000478 0000
+000479 0000
+00047a 0000
+00047b 0000
+00047c 0000
+00047d 0000
+00047e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00047f 0000
+000480 0000
+000481 0000
+000482 0000
+000483 0000
+000484 0000
+000485 0000
+000486 0000
+000487 0000
+000488 0000
+000489 0000
+00048a 0000
+00048b 0000
+00048c 0000
+00048d 0000
+00048e 0000
+00048f 0000
+000490 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000491 0000
+000492 0000
+000493 0000
+000494 0000
+000495 0000
+000496 0000
+000497 0000
+000498 0000
+000499 0000
+00049a 0000
+00049b 0000
+00049c 0000
+00049d 0000
+00049e 0000
+00049f 0000
+0004a0 0000
+0004a1 0000
+0004a2 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0004a3 0000
+0004a4 0000
+0004a5 0000
+0004a6 0000
+0004a7 0000
+0004a8 0000
+0004a9 0000
+0004aa 0000
+0004ab 0000
+0004ac 0000
+0004ad 0000
+0004ae 0000
+0004af 0000
+0004b0 0000
+0004b1 0000
+0004b2 0000
+0004b3 0000
+0004b4 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0004b5 0000
+0004b6 0000
+0004b7 0000
+0004b8 0000
+0004b9 0000
+0004ba 0000
+0004bb 0000
+0004bc 0000
+0004bd 0000
+0004be 0000
+0004bf 0000
+0004c0 0000
+0004c1 0000
+0004c2 0000
+0004c3 0000
+0004c4 0000
+0004c5 0000
+0004c6 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0004c7 0000
+0004c8 0000
+0004c9 0000
+0004ca 0000
+0004cb 0000
+0004cc 0000
+0004cd 0000
+0004ce 0000
+0004cf 0000
+0004d0 0000
+0004d1 0000
+0004d2 0000
+0004d3 0000
+0004d4 0000
+0004d5 0000
+0004d6 0000
+0004d7 0000
+0004d8 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0004d9 0000
+0004da 0000
+0004db 0000
+0004dc 0000
+0004dd 0000
+0004de 0000
+0004df 0000
+0004e0 0000
+0004e1 0000
+0004e2 0000
+0004e3 0000
+0004e4 0000
+0004e5 0000
+0004e6 0000
+0004e7 0000
+0004e8 0000
+0004e9 0000
+0004ea 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0004eb 0000
+0004ec 0000
+0004ed 0000
+0004ee 0000
+0004ef 0000
+0004f0 0000
+0004f1 0000
+0004f2 0000
+0004f3 0000
+0004f4 0000
+0004f5 0000
+0004f6 0000
+0004f7 0000
+0004f8 0000
+0004f9 0000
+0004fa 0000
+0004fb 0000
+0004fc 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0004fd 0000
+0004fe 0000
+0004ff 0000
+000500 0000
+000501 0000
+000502 0000
+000503 0000
+000504 0000
+000505 0000
+000506 0000
+000507 0000
+000508 0000
+000509 0000
+00050a 0000
+00050b 0000
+00050c 0000
+00050d 0000
+00050e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+00050f 0000
+000510 0000
+000511 0000
+000512 0000
+000513 0000
+000514 0000
+000515 0000
+000516 0000
+000517 0000
+000518 0000
+000519 0000
+00051a 0000
+00051b 0000
+00051c 0000
+00051d 0000
+00051e 0000
+00051f 0000
+000520 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000521 0000
+000522 0000
+000523 0000
+000524 0000
+000525 0000
+000526 0000
+000527 0000
+000528 0000
+000529 0000
+00052a 0000
+00052b 0000
+00052c 0000
+00052d 0000
+00052e 0000
+00052f 0000
+000530 0000
+000531 0000
+000532 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000533 0000
+000534 0000
+000535 0000
+000536 0000
+000537 0000
+000538 0000
+000539 0000
+00053a 0000
+00053b 0000
+00053c 0000
+00053d 0000
+00053e 0000
+00053f 0000
+000540 0000
+000541 0000
+000542 0000
+000543 0000
+000544 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000545 0000
+000546 0000
+000547 0000
+000548 0000
+000549 0000
+00054a 0000
+00054b 0000
+00054c 0000
+00054d 0000
+00054e 0000
+00054f 0000
+000550 0000
+000551 0000
+000552 0000
+000553 0000
+000554 0000
+000555 0000
+000556 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000557 0000
+000558 0000
+000559 0000
+00055a 0000
+00055b 0000
+00055c 0000
+00055d 0000
+00055e 0000
+00055f 0000
+000560 0000
+000561 0000
+000562 0000
+000563 0000
+000564 0000
+000565 0000
+000566 0000
+000567 0000
+000568 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000569 0000
+00056a 0000
+00056b 0000
+00056c 0000
+00056d 0000
+00056e 0000
+00056f 0000
+000570 0000
+000571 0000
+000572 0000
+000573 0000
+000574 0000
+000575 0000
+000576 0000
+000577 0000
+000578 0000
+000579 0000
+00057a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00057b 0000
+00057c 0000
+00057d 0000
+00057e 0000
+00057f 0000
+000580 0000
+000581 0000
+000582 0000
+000583 0000
+000584 0000
+000585 0000
+000586 0000
+000587 0000
+000588 0000
+000589 0000
+00058a 0000
+00058b 0000
+00058c 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+00058d 0000
+00058e 0000
+00058f 0000
+000590 0000
+000591 0000
+000592 0000
+000593 0000
+000594 0000
+000595 0000
+000596 0000
+000597 0000
+000598 0000
+000599 0000
+00059a 0000
+00059b 0000
+00059c 0000
+00059d 0000
+00059e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00059f 0000
+0005a0 0000
+0005a1 0000
+0005a2 0000
+0005a3 0000
+0005a4 0000
+0005a5 0000
+0005a6 0000
+0005a7 0000
+0005a8 0000
+0005a9 0000
+0005aa 0000
+0005ab 0000
+0005ac 0000
+0005ad 0000
+0005ae 0000
+0005af 0000
+0005b0 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0005b1 0000
+0005b2 0000
+0005b3 0000
+0005b4 0000
+0005b5 0000
+0005b6 0000
+0005b7 0000
+0005b8 0000
+0005b9 0000
+0005ba 0000
+0005bb 0000
+0005bc 0000
+0005bd 0000
+0005be 0000
+0005bf 0000
+0005c0 0000
+0005c1 0000
+0005c2 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0005c3 0000
+0005c4 0000
+0005c5 0000
+0005c6 0000
+0005c7 0000
+0005c8 0000
+0005c9 0000
+0005ca 0000
+0005cb 0000
+0005cc 0000
+0005cd 0000
+0005ce 0000
+0005cf 0000
+0005d0 0000
+0005d1 0000
+0005d2 0000
+0005d3 0000
+0005d4 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0005d5 0000
+0005d6 0000
+0005d7 0000
+0005d8 0000
+0005d9 0000
+0005da 0000
+0005db 0000
+0005dc 0000
+0005dd 0000
+0005de 0000
+0005df 0000
+0005e0 0000
+0005e1 0000
+0005e2 0000
+0005e3 0000
+0005e4 0000
+0005e5 0000
+0005e6 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0005e7 0000
+0005e8 0000
+0005e9 0000
+0005ea 0000
+0005eb 0000
+0005ec 0000
+0005ed 0000
+0005ee 0000
+0005ef 0000
+0005f0 0000
+0005f1 0000
+0005f2 0000
+0005f3 0000
+0005f4 0000
+0005f5 0000
+0005f6 0000
+0005f7 0000
+0005f8 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0005f9 0000
+0005fa 0000
+0005fb 0000
+0005fc 0000
+0005fd 0000
+0005fe 0000
+0005ff 0000
+000600 0000
+000601 0000
+000602 0000
+000603 0000
+000604 0000
+000605 0000
+000606 0000
+000607 0000
+000608 0000
+000609 0000
+00060a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+00060b 0000
+00060c 0000
+00060d 0000
+00060e 0000
+00060f 0000
+000610 0000
+000611 0000
+000612 0000
+000613 0000
+000614 0000
+000615 0000
+000616 0000
+000617 0000
+000618 0000
+000619 0000
+00061a 0000
+00061b 0000
+00061c 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00061d 0000
+00061e 0000
+00061f 0000
+000620 0000
+000621 0000
+000622 0000
+000623 0000
+000624 0000
+000625 0000
+000626 0000
+000627 0000
+000628 0000
+000629 0000
+00062a 0000
+00062b 0000
+00062c 0000
+00062d 0000
+00062e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00062f 0000
+000630 0000
+000631 0000
+000632 0000
+000633 0000
+000634 0000
+000635 0000
+000636 0000
+000637 0000
+000638 0000
+000639 0000
+00063a 0000
+00063b 0000
+00063c 0000
+00063d 0000
+00063e 0000
+00063f 0000
+000640 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000641 0000
+000642 0000
+000643 0000
+000644 0000
+000645 0000
+000646 0000
+000647 0000
+000648 0000
+000649 0000
+00064a 0000
+00064b 0000
+00064c 0000
+00064d 0000
+00064e 0000
+00064f 0000
+000650 0000
+000651 0000
+000652 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000653 0000
+000654 0000
+000655 0000
+000656 0000
+000657 0000
+000658 0000
+000659 0000
+00065a 0000
+00065b 0000
+00065c 0000
+00065d 0000
+00065e 0000
+00065f 0000
+000660 0000
+000661 0000
+000662 0000
+000663 0000
+000664 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000665 0000
+000666 0000
+000667 0000
+000668 0000
+000669 0000
+00066a 0000
+00066b 0000
+00066c 0000
+00066d 0000
+00066e 0000
+00066f 0000
+000670 0000
+000671 0000
+000672 0000
+000673 0000
+000674 0000
+000675 0000
+000676 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000677 0000
+000678 0000
+000679 0000
+00067a 0000
+00067b 0000
+00067c 0000
+00067d 0000
+00067e 0000
+00067f 0000
+000680 0000
+000681 0000
+000682 0000
+000683 0000
+000684 0000
+000685 0000
+000686 0000
+000687 0000
+000688 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000689 0000
+00068a 0000
+00068b 0000
+00068c 0000
+00068d 0000
+00068e 0000
+00068f 0000
+000690 0000
+000691 0000
+000692 0000
+000693 0000
+000694 0000
+000695 0000
+000696 0000
+000697 0000
+000698 0000
+000699 0000
+00069a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00069b 0000
+00069c 0000
+00069d 0000
+00069e 0000
+00069f 0000
+0006a0 0000
+0006a1 0000
+0006a2 0000
+0006a3 0000
+0006a4 0000
+0006a5 0000
+0006a6 0000
+0006a7 0000
+0006a8 0000
+0006a9 0000
+0006aa 0000
+0006ab 0000
+0006ac 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0006ad 0000
+0006ae 0000
+0006af 0000
+0006b0 0000
+0006b1 0000
+0006b2 0000
+0006b3 0000
+0006b4 0000
+0006b5 0000
+0006b6 0000
+0006b7 0000
+0006b8 0000
+0006b9 0000
+0006ba 0000
+0006bb 0000
+0006bc 0000
+0006bd 0000
+0006be 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0006bf 0000
+0006c0 0000
+0006c1 0000
+0006c2 0000
+0006c3 0000
+0006c4 0000
+0006c5 0000
+0006c6 0000
+0006c7 0000
+0006c8 0000
+0006c9 0000
+0006ca 0000
+0006cb 0000
+0006cc 0000
+0006cd 0000
+0006ce 0000
+0006cf 0000
+0006d0 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0006d1 0000
+0006d2 0000
+0006d3 0000
+0006d4 0000
+0006d5 0000
+0006d6 0000
+0006d7 0000
+0006d8 0000
+0006d9 0000
+0006da 0000
+0006db 0000
+0006dc 0000
+0006dd 0000
+0006de 0000
+0006df 0000
+0006e0 0000
+0006e1 0000
+0006e2 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0006e3 0000
+0006e4 0000
+0006e5 0000
+0006e6 0000
+0006e7 0000
+0006e8 0000
+0006e9 0000
+0006ea 0000
+0006eb 0000
+0006ec 0000
+0006ed 0000
+0006ee 0000
+0006ef 0000
+0006f0 0000
+0006f1 0000
+0006f2 0000
+0006f3 0000
+0006f4 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0006f5 0000
+0006f6 0000
+0006f7 0000
+0006f8 0000
+0006f9 0000
+0006fa 0000
+0006fb 0000
+0006fc 0000
+0006fd 0000
+0006fe 0000
+0006ff 0000
+000700 0000
+000701 0000
+000702 0000
+000703 0000
+000704 0000
+000705 0000
+000706 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000707 0000
+000708 0000
+000709 0000
+00070a 0000
+00070b 0000
+00070c 0000
+00070d 0000
+00070e 0000
+00070f 0000
+000710 0000
+000711 0000
+000712 0000
+000713 0000
+000714 0000
+000715 0000
+000716 0000
+000717 0000
+000718 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000719 0000
+00071a 0000
+00071b 0000
+00071c 0000
+00071d 0000
+00071e 0000
+00071f 0000
+000720 0000
+000721 0000
+000722 0000
+000723 0000
+000724 0000
+000725 0000
+000726 0000
+000727 0000
+000728 0000
+000729 0000
+00072a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00072b 0000
+00072c 0000
+00072d 0000
+00072e 0000
+00072f 0000
+000730 0000
+000731 0000
+000732 0000
+000733 0000
+000734 0000
+000735 0000
+000736 0000
+000737 0000
+000738 0000
+000739 0000
+00073a 0000
+00073b 0000
+00073c 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00073d 0000
+00073e 0000
+00073f 0000
+000740 0000
+000741 0000
+000742 0000
+000743 0000
+000744 0000
+000745 0000
+000746 0000
+000747 0000
+000748 0000
+000749 0000
+00074a 0000
+00074b 0000
+00074c 0000
+00074d 0000
+00074e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00074f 0000
+000750 0000
+000751 0000
+000752 0000
+000753 0000
+000754 0000
+000755 0000
+000756 0000
+000757 0000
+000758 0000
+000759 0000
+00075a 0000
+00075b 0000
+00075c 0000
+00075d 0000
+00075e 0000
+00075f 0000
+000760 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000761 0000
+000762 0000
+000763 0000
+000764 0000
+000765 0000
+000766 0000
+000767 0000
+000768 0000
+000769 0000
+00076a 0000
+00076b 0000
+00076c 0000
+00076d 0000
+00076e 0000
+00076f 0000
+000770 0000
+000771 0000
+000772 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000773 0000
+000774 0000
+000775 0000
+000776 0000
+000777 0000
+000778 0000
+000779 0000
+00077a 0000
+00077b 0000
+00077c 0000
+00077d 0000
+00077e 0000
+00077f 0000
+000780 0000
+000781 0000
+000782 0000
+000783 0000
+000784 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000785 0000
+000786 0000
+000787 0000
+000788 0000
+000789 0000
+00078a 0000
+00078b 0000
+00078c 0000
+00078d 0000
+00078e 0000
+00078f 0000
+000790 0000
+000791 0000
+000792 0000
+000793 0000
+000794 0000
+000795 0000
+000796 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000797 0000
+000798 0000
+000799 0000
+00079a 0000
+00079b 0000
+00079c 0000
+00079d 0000
+00079e 0000
+00079f 0000
+0007a0 0000
+0007a1 0000
+0007a2 0000
+0007a3 0000
+0007a4 0000
+0007a5 0000
+0007a6 0000
+0007a7 0000
+0007a8 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0007a9 0000
+0007aa 0000
+0007ab 0000
+0007ac 0000
+0007ad 0000
+0007ae 0000
+0007af 0000
+0007b0 0000
+0007b1 0000
+0007b2 0000
+0007b3 0000
+0007b4 0000
+0007b5 0000
+0007b6 0000
+0007b7 0000
+0007b8 0000
+0007b9 0000
+0007ba 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0007bb 0000
+0007bc 0000
+0007bd 0000
+0007be 0000
+0007bf 0000
+0007c0 0000
+0007c1 0000
+0007c2 0000
+0007c3 0000
+0007c4 0000
+0007c5 0000
+0007c6 0000
+0007c7 0000
+0007c8 0000
+0007c9 0000
+0007ca 0000
+0007cb 0000
+0007cc 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0007cd 0000
+0007ce 0000
+0007cf 0000
+0007d0 0000
+0007d1 0000
+0007d2 0000
+0007d3 0000
+0007d4 0000
+0007d5 0000
+0007d6 0000
+0007d7 0000
+0007d8 0000
+0007d9 0000
+0007da 0000
+0007db 0000
+0007dc 0000
+0007dd 0000
+0007de 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0007df 0000
+0007e0 0000
+0007e1 0000
+0007e2 0000
+0007e3 0000
+0007e4 0000
+0007e5 0000
+0007e6 0000
+0007e7 0000
+0007e8 0000
+0007e9 0000
+0007ea 0000
+0007eb 0000
+0007ec 0000
+0007ed 0000
+0007ee 0000
+0007ef 0000
+0007f0 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0007f1 0000
+0007f2 0000
+0007f3 0000
+0007f4 0000
+0007f5 0000
+0007f6 0000
+0007f7 0000
+0007f8 0000
+0007f9 0000
+0007fa 0000
+0007fb 0000
+0007fc 0000
+0007fd 0000
+0007fe 0000
+0007ff 0000
+000800 0000
+000801 0000
+000802 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000803 0000
+000804 0000
+000805 0000
+000806 0000
+000807 0000
+000808 0000
+000809 0000
+00080a 0000
+00080b 0000
+00080c 0000
+00080d 0000
+00080e 0000
+00080f 0000
+000810 0000
+000811 0000
+000812 0000
+000813 0000
+000814 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000815 0000
+000816 0000
+000817 0000
+000818 0000
+000819 0000
+00081a 0000
+00081b 0000
+00081c 0000
+00081d 0000
+00081e 0000
+00081f 0000
+000820 0000
+000821 0000
+000822 0000
+000823 0000
+000824 0000
+000825 0000
+000826 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000827 0000
+000828 0000
+000829 0000
+00082a 0000
+00082b 0000
+00082c 0000
+00082d 0000
+00082e 0000
+00082f 0000
+000830 0000
+000831 0000
+000832 0000
+000833 0000
+000834 0000
+000835 0000
+000836 0000
+000837 0000
+000838 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000839 0000
+00083a 0000
+00083b 0000
+00083c 0000
+00083d 0000
+00083e 0000
+00083f 0000
+000840 0000
+000841 0000
+000842 0000
+000843 0000
+000844 0000
+000845 0000
+000846 0000
+000847 0000
+000848 0000
+000849 0000
+00084a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00084b 0000
+00084c 0000
+00084d 0000
+00084e 0000
+00084f 0000
+000850 0000
+000851 0000
+000852 0000
+000853 0000
+000854 0000
+000855 0000
+000856 0000
+000857 0000
+000858 0000
+000859 0000
+00085a 0000
+00085b 0000
+00085c 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00085d 0000
+00085e 0000
+00085f 0000
+000860 0000
+000861 0000
+000862 0000
+000863 0000
+000864 0000
+000865 0000
+000866 0000
+000867 0000
+000868 0000
+000869 0000
+00086a 0000
+00086b 0000
+00086c 0000
+00086d 0000
+00086e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00086f 0000
+000870 0000
+000871 0000
+000872 0000
+000873 0000
+000874 0000
+000875 0000
+000876 0000
+000877 0000
+000878 0000
+000879 0000
+00087a 0000
+00087b 0000
+00087c 0000
+00087d 0000
+00087e 0000
+00087f 0000
+000880 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+000881 0000
+000882 0000
+000883 0000
+000884 0000
+000885 0000
+000886 0000
+000887 0000
+000888 0000
+000889 0000
+00088a 0000
+00088b 0000
+00088c 0000
+00088d 0000
+00088e 0000
+00088f 0000
+000890 0000
+000891 0000
+000892 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000893 0000
+000894 0000
+000895 0000
+000896 0000
+000897 0000
+000898 0000
+000899 0000
+00089a 0000
+00089b 0000
+00089c 0000
+00089d 0000
+00089e 0000
+00089f 0000
+0008a0 0000
+0008a1 0000
+0008a2 0000
+0008a3 0000
+0008a4 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0008a5 0000
+0008a6 0000
+0008a7 0000
+0008a8 0000
+0008a9 0000
+0008aa 0000
+0008ab 0000
+0008ac 0000
+0008ad 0000
+0008ae 0000
+0008af 0000
+0008b0 0000
+0008b1 0000
+0008b2 0000
+0008b3 0000
+0008b4 0000
+0008b5 0000
+0008b6 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0008b7 0000
+0008b8 0000
+0008b9 0000
+0008ba 0000
+0008bb 0000
+0008bc 0000
+0008bd 0000
+0008be 0000
+0008bf 0000
+0008c0 0000
+0008c1 0000
+0008c2 0000
+0008c3 0000
+0008c4 0000
+0008c5 0000
+0008c6 0000
+0008c7 0000
+0008c8 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0008c9 0000
+0008ca 0000
+0008cb 0000
+0008cc 0000
+0008cd 0000
+0008ce 0000
+0008cf 0000
+0008d0 0000
+0008d1 0000
+0008d2 0000
+0008d3 0000
+0008d4 0000
+0008d5 0000
+0008d6 0000
+0008d7 0000
+0008d8 0000
+0008d9 0000
+0008da 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0008db 0000
+0008dc 0000
+0008dd 0000
+0008de 0000
+0008df 0000
+0008e0 0000
+0008e1 0000
+0008e2 0000
+0008e3 0000
+0008e4 0000
+0008e5 0000
+0008e6 0000
+0008e7 0000
+0008e8 0000
+0008e9 0000
+0008ea 0000
+0008eb 0000
+0008ec 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0008ed 0000
+0008ee 0000
+0008ef 0000
+0008f0 0000
+0008f1 0000
+0008f2 0000
+0008f3 0000
+0008f4 0000
+0008f5 0000
+0008f6 0000
+0008f7 0000
+0008f8 0000
+0008f9 0000
+0008fa 0000
+0008fb 0000
+0008fc 0000
+0008fd 0000
+0008fe 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+0008ff 0000
+000900 0000
+000901 0000
+000902 0000
+000903 0000
+000904 0000
+000905 0000
+000906 0000
+000907 0000
+000908 0000
+000909 0000
+00090a 0000
+00090b 0000
+00090c 0000
+00090d 0000
+00090e 0000
+00090f 0000
+000910 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000911 0000
+000912 0000
+000913 0000
+000914 0000
+000915 0000
+000916 0000
+000917 0000
+000918 0000
+000919 0000
+00091a 0000
+00091b 0000
+00091c 0000
+00091d 0000
+00091e 0000
+00091f 0000
+000920 0000
+000921 0000
+000922 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000923 0000
+000924 0000
+000925 0000
+000926 0000
+000927 0000
+000928 0000
+000929 0000
+00092a 0000
+00092b 0000
+00092c 0000
+00092d 0000
+00092e 0000
+00092f 0000
+000930 0000
+000931 0000
+000932 0000
+000933 0000
+000934 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000935 0000
+000936 0000
+000937 0000
+000938 0000
+000939 0000
+00093a 0000
+00093b 0000
+00093c 0000
+00093d 0000
+00093e 0000
+00093f 0000
+000940 0000
+000941 0000
+000942 0000
+000943 0000
+000944 0000
+000945 0000
+000946 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000947 0000
+000948 0000
+000949 0000
+00094a 0000
+00094b 0000
+00094c 0000
+00094d 0000
+00094e 0000
+00094f 0000
+000950 0000
+000951 0000
+000952 0000
+000953 0000
+000954 0000
+000955 0000
+000956 0000
+000957 0000
+000958 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+000959 0000
+00095a 0000
+00095b 0000
+00095c 0000
+00095d 0000
+00095e 0000
+00095f 0000
+000960 0000
+000961 0000
+000962 0000
+000963 0000
+000964 0000
+000965 0000
+000966 0000
+000967 0000
+000968 0000
+000969 0000
+00096a 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00096b 0000
+00096c 0000
+00096d 0000
+00096e 0000
+00096f 0000
+000970 0000
+000971 0000
+000972 0000
+000973 0000
+000974 0000
+000975 0000
+000976 0000
+000977 0000
+000978 0000
+000979 0000
+00097a 0000
+00097b 0000
+00097c 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                 
+00097d 0000
+00097e 0000
+00097f 0000
+000980 0000
+000981 0000
+000982 0000
+000983 0000
+000984 0000
+000985 0000
+000986 0000
+000987 0000
+000988 0000
+000989 0000
+00098a 0000
+00098b 0000
+00098c 0000
+00098d 0000
+00098e 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+00098f 0000
+000990 0000
+000991 0000
+000992 0000
+000993 0000
+000994 0000
+000995 0000
+000996 0000
+000997 0000
+000998 0000
+000999 0000
+00099a 0000
+00099b 0000
+00099c 0000
+00099d 0000
+00099e 0000
+00099f 0000
+0009a0 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+0009a1 0000
+0009a2 0000
+0009a3 0000
+0009a4 0000
+0009a5 0000
+0009a6 0000
+0009a7 0000
+0009a8 0000
+0009a9 0000
+0009aa 0000
+0009ab 0000
+0009ac 0000
+0009ad 0000
+0009ae 0000
+0009af 0000
+0009b0 0000
+0009b1 0000
+0009b2 0000      	nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop 
+                   
+
+
+RESOURCE USE INFORMATION
+------------------------
+
+Notice:
+The register and instruction counts are symbol table hit counts,
+and hence implicitly used resources are not counted, eg, the
+'lpm' instruction without operands implicitly uses r0 and z,
+none of which are counted.
+
+x,y,z are separate entities in the symbol table and are
+counted separately from r26..r31 here.
+
+.dseg memory usage only counts static data declared with .byte
+
+"ATmega16" register use summary:
+r0 :   8 r1 :   8 r2 :   8 r3 :   8 r4 :   8 r5 :   8 r6 :   8 r7 :   3 
+r8 :   3 r9 :   0 r10:   0 r11:   0 r12:   0 r13:   5 r14:   0 r15:   0 
+r16: 153 r17:  22 r18:   3 r19:  13 r20:  20 r21:  19 r22:  16 r23:   4 
+r24:   4 r25:   4 r26:   0 r27:   0 r28:   0 r29:   0 r30:  12 r31:  12 
+x  :   0 y  :   0 z  :   6 
+Registers used: 23 out of 35 (65.7%)
+
+"ATmega16" instruction use summary:
+.lds  :   0 .sts  :   0 adc   :   6 add   :   6 adiw  :   0 and   :   0 
+andi  :   6 asr   :   0 bclr  :   0 bld   :   0 brbc  :   0 brbs  :   0 
+brcc  :   0 brcs  :   3 break :   0 breq  :  24 brge  :   0 brhc  :   0 
+brhs  :   0 brid  :   0 brie  :   0 brlo  :   4 brlt  :   0 brmi  :   0 
+brne  :   8 brpl  :   0 brsh  :   6 brtc  :   0 brts  :   0 brvc  :   0 
+brvs  :   0 bset  :   0 bst   :   0 call  :   0 cbi   :   3 cbr   :   0 
+clc   :   0 clh   :   0 cli   :   0 cln   :   0 clr   :  55 cls   :   0 
+clt   :   0 clv   :   0 clz   :   0 com   :   0 cp    :   9 cpc   :   0 
+cpi   :  31 cpse  :   0 dec   :   9 eor   :   0 fmul  :   0 fmuls :   0 
+fmulsu:   0 icall :   0 ijmp  :   0 in    :   3 inc   :  17 jmp   :   0 
+ld    :   0 ldd   :   0 ldi   :  64 lds   :   0 lpm   :  12 lsl   :   0 
+lsr   :   0 mov   :  21 movw  :   0 mul   :   0 muls  :   0 mulsu :   0 
+neg   :   0 nop   :1945 or    :   0 ori   :   0 out   :  62 pop   :   3 
+push  :   3 rcall :  52 ret   :  30 reti  :   0 rjmp  :  63 rol   :   0 
+ror   :   0 sbc   :   0 sbci  :   0 sbi   :   3 sbic  :  11 sbis  :  17 
+sbiw  :   0 sbr   :   0 sbrc  :   0 sbrs  :   0 sec   :   0 seh   :   0 
+sei   :   0 sen   :   0 ser   :   0 ses   :   0 set   :   0 sev   :   0 
+sez   :   0 sleep :   0 spm   :   0 st    :   0 std   :   0 sts   :   0 
+sub   :   0 subi  :   6 swap  :   0 tst   :   0 wdr   :   0 
+Instructions used: 29 out of 113 (25.7%)
+
+"ATmega16" memory use summary [bytes]:
+Segment   Begin    End      Code   Data   Used    Size   Use%
+---------------------------------------------------------------
+[.cseg] 0x000000 0x001368   4952     16   4968   16384  30.3%
+[.dseg] 0x000060 0x000060      0      0      0    1024   0.0%
+[.eseg] 0x000000 0x000000      0      0      0     512   0.0%
+
+Assembly complete, 0 errors, 0 warnings

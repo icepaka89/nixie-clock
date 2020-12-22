@@ -1,0 +1,164 @@
+
+AVRASM ver. 2.1.57  C:\Users\icepaka89\Documents\Atmel Studio Code\CLOCK_TIMER\CLOCK_TIMER\CLOCK_TIMER.asm Sun Dec 17 21:34:05 2017
+
+C:\Users\icepaka89\Documents\Atmel Studio Code\CLOCK_TIMER\CLOCK_TIMER\CLOCK_TIMER.asm(28): Including file 'C:\Program Files (x86)\Atmel\Atmel Toolchain\AVR Assembler\Native\2.1.1175\avrassembler\Include\tn85def.inc'
+                 
+                 
+                 ;*
+                 ;* Title: CLOCK_TIMER.asm
+                 ;* Author: Daniel Gomm
+                 ;* Version: 0.2
+                 ;* Last updated: 12/28/2015
+                 ;* Target: ATmega16
+                 ;*
+                 ;* DESCRIPTION
+                 ;* 
+                 ;* This Program utilizes an ATTINY85 chip to create a timer pulse that goes off
+                 ;* in one second intervals. This program can be used to drive clocks.
+                 ;*
+                 ;* Ports:
+                 ;*
+                 ;* PortB: INPUT / OUTPUT / ISP
+                 ;* This port reads in the init value of logic 1 on PB3. This starts the timer, which 
+                 ;* outputs the pulses on PB4. On boot, the program supports illuminating a status LED on PB1.
+                 ;* The programmer is also connected to this port.
+                 ;*
+                 ;* VERSION HISTORY
+                 ;* 0.1 Implemented full program that alternates values each second. Tests with the ATMega16a show correct operation.
+                 ;* 0.2 Timer was giving signals that were slightly longer than 1 second. Values adjusted to keep proper time.
+                 ;*
+                 ;* NX-1 Nixie Tube Clock Timer (c) 2016 icepaka89
+                 ;***************************************************************************
+                 .list
+                 
+000000 e103      ldi r16, $13
+000001 bb07      out DDRB, r16
+                 
+                 ; ** STACK POINTER INITIALIZATION ** ;
+000002 e002      ldi r16, high(RAMEND)
+000003 bf0e      out SPH, r16
+                 
+000004 e50f      ldi r16, low(RAMEND)
+000005 bf0d      out SPL, r16
+                 
+                 init:
+000006 98c1      	cbi PORTB, 1
+000007 d00d      	rcall delay_sec
+000008 9ac1      	sbi PORTB, 1
+000009 d00b      	rcall delay_sec
+00000a 98c1      	cbi PORTB, 1
+                 waitForStart:
+00000b 9bb3      	sbis PINB, 3
+00000c cffe      	rjmp waitForStart
+00000d 9ac1      	sbi PORTB, 1
+                 main:
+00000e 9ac4      	sbi PORTB, 4
+00000f 9ac1      	sbi PORTB, 1
+000010 d004      	rcall delay_sec
+000011 98c4      	cbi PORTB, 4
+000012 98c1      	cbi PORTB, 1
+000013 d001      	rcall delay_sec
+000014 cff9      	rjmp main
+                 
+                 ;****************************************************************************
+                 ;*
+                 ;* delay_sec -- Delays for one second
+                 ;*
+                 ;* Description:
+                 ;* This subroutine delays for approximately 1.02 seconds.
+                 ;*
+                 ;* Authors: Daniel Gomm
+                 ;* Version: 1.0
+                 ;* Last updated: <date>
+                 ;* Target: ATTINY85 @ 1 MHz
+                 ;* Number of words: 
+                 ;* Number of cycles: 
+                 ;* Low registers modified: none
+                 ;* High registers modified: r16, r17, r18
+                 ;*
+                 ;* Parameters: none
+                 ;*
+                 ;* Notes: This subroutine van be made into a variable delay if r18 is not set
+                 ;* but instead used as a parameter.
+                 ;*
+                 ;***************************************************************************
+                  delay_sec:
+000015 2700      	clr r16
+000016 e614      	ldi r17, $64								;load r17 with a value of 100
+000017 e02a      	ldi r18, $0A								;load r18 with a value of 10
+000018 c005      	rjmp delay_loop								;begin at delay_loop
+                  ;delays for 1.02 s each iteration.
+                  outer_delay:
+000019 952a      	dec r18										;inner_delay is run 'r18' times
+00001a e51c      	ldi r17, $5C								;re-load r17 with value of 100 so that inner_delay can be re-run.
+00001b c002      	rjmp delay_loop								;restart at delay_loop
+                  ;delays for 0.100 s each iteration. We therefore need 10 iterations
+                  inner_delay:
+00001c 951a      	dec r17										;delay_loop is run 'r17' times
+00001d 2700      	clr r16
+                  ;delays for 0.001 s  each iteration. We therefore need 1000 iterations 
+                  delay_loop:									
+00001e 9503      	inc r16										;1 cycle
+00001f 3f0a      	cpi r16, $FA								;1 cycle
+000020 f7e9      	brne delay_loop								;2 cycles
+                 
+                 	;inner delay check
+000021 3010      	cpi r17, $00								;is r17 = 0?
+000022 f7c9      	brne inner_delay							;if not, run delay loop again
+                 
+000023 3020      	cpi r18, $00								;is r18 = 0?
+000024 f7a1      	brne outer_delay							;if not, run outer delay again
+000025 0000      	nop
+
+
+RESOURCE USE INFORMATION
+------------------------
+
+Notice:
+The register and instruction counts are symbol table hit counts,
+and hence implicitly used resources are not counted, eg, the
+'lpm' instruction without operands implicitly uses r0 and z,
+none of which are counted.
+
+x,y,z are separate entities in the symbol table and are
+counted separately from r26..r31 here.
+
+.dseg memory usage only counts static data declared with .byte
+
+"ATtiny85" register use summary:
+r0 :   0 r1 :   0 r2 :   0 r3 :   0 r4 :   0 r5 :   0 r6 :   0 r7 :   0 
+r8 :   0 r9 :   0 r10:   0 r11:   0 r12:   0 r13:   0 r14:   0 r15:   0 
+r16:  10 r17:   4 r18:   3 r19:   0 r20:   0 r21:   0 r22:   0 r23:   0 
+r24:   0 r25:   0 r26:   0 r27:   0 r28:   0 r29:   0 r30:   0 r31:   0 
+x  :   0 y  :   0 z  :   0 
+Registers used: 3 out of 35 (8.6%)
+
+"ATtiny85" instruction use summary:
+.lds  :   0 .sts  :   0 adc   :   0 add   :   0 adiw  :   0 and   :   0 
+andi  :   0 asr   :   0 bclr  :   0 bld   :   0 brbc  :   0 brbs  :   0 
+brcc  :   0 brcs  :   0 break :   0 breq  :   0 brge  :   0 brhc  :   0 
+brhs  :   0 brid  :   0 brie  :   0 brlo  :   0 brlt  :   0 brmi  :   0 
+brne  :   3 brpl  :   0 brsh  :   0 brtc  :   0 brts  :   0 brvc  :   0 
+brvs  :   0 bset  :   0 bst   :   0 cbi   :   4 cbr   :   0 clc   :   0 
+clh   :   0 cli   :   0 cln   :   0 clr   :   2 cls   :   0 clt   :   0 
+clv   :   0 clz   :   0 com   :   0 cp    :   0 cpc   :   0 cpi   :   3 
+cpse  :   0 dec   :   2 eor   :   0 icall :   0 ijmp  :   0 in    :   0 
+inc   :   1 ld    :   0 ldd   :   0 ldi   :   6 lds   :   0 lpm   :   0 
+lsl   :   0 lsr   :   0 mov   :   0 movw  :   0 neg   :   0 nop   :   1 
+or    :   0 ori   :   0 out   :   3 pop   :   0 push  :   0 rcall :   4 
+ret   :   1 reti  :   0 rjmp  :   4 rol   :   0 ror   :   0 sbc   :   0 
+sbci  :   0 sbi   :   4 sbic  :   0 sbis  :   1 sbiw  :   0 sbr   :   0 
+sbrc  :   0 sbrs  :   0 sec   :   0 seh   :   0 sei   :   0 sen   :   0 
+ser   :   0 ses   :   0 set   :   0 sev   :   0 sez   :   0 sleep :   0 
+spm   :   0 st    :   0 std   :   0 sts   :   0 sub   :   0 subi  :   0 
+swap  :   0 tst   :   0 wdr   :   0 
+Instructions used: 14 out of 105 (13.3%)
+
+"ATtiny85" memory use summary [bytes]:
+Segment   Begin    End      Code   Data   Used    Size   Use%
+---------------------------------------------------------------
+[.cseg] 0x000000 0x00004e     78      0     78    8192   1.0%
+[.dseg] 0x000060 0x000060      0      0      0     512   0.0%
+[.eseg] 0x000000 0x000000      0      0      0     512   0.0%
+
+Assembly complete, 0 errors, 0 warnings
